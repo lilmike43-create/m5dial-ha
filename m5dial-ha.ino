@@ -71,17 +71,21 @@ M5Canvas canvas(&M5Dial.Display);
 const char* menuNames[MENU_COUNT] = {"KEYPAD", "SENSORS", "SETTINGS"};
 int menuSelection = 0;  // Currently highlighted menu item (0=KEYPAD, 1=SENSORS, 2=SETTINGS)
 
-// Colors
-#define COLOR_BG        0x0000  // Black
+// Modern Color Palette - Beautiful gradients and vibrant colors
+#define COLOR_BG        0x0821  // Dark blue-gray background
 #define COLOR_TEXT      0xFFFF  // White
-#define COLOR_ACCENT    0x07FF  // Cyan
-#define COLOR_OK        0x03E0  // Dark green
-#define COLOR_WARN      0xFFE0  // Yellow
+#define COLOR_ACCENT    0x05FF  // Bright cyan
+#define COLOR_OK        0x07E0  // Bright green
+#define COLOR_WARN      0xFEA0  // Bright yellow
 #define COLOR_ERROR     0xF800  // Red
-#define COLOR_DIM       0x7BEF  // Gray
+#define COLOR_DIM       0x5AEB  // Light gray
 #define COLOR_ARMED     0xF800  // Red
-#define COLOR_DISARMED  0x03E0  // Dark green
-#define COLOR_ORANGE    0xC260  // Dark orange for menu highlight
+#define COLOR_DISARMED  0x07E0  // Bright green
+#define COLOR_ORANGE    0xFD20  // Vibrant orange for menu highlight
+#define COLOR_PURPLE    0x781F  // Purple accent
+#define COLOR_BLUE      0x041F  // Deep blue
+#define COLOR_GLASS     0x2104  // Glassmorphic overlay
+#define COLOR_DARK_GRAY 0x2104  // Dark gray for subtle elements
 
 // App states
 enum AppScreen {
@@ -182,6 +186,10 @@ void syncRtcFromNtp();
 void shuffleKeypad();
 void playAlarmBuzzer();
 void stopAlarmBuzzer();
+void drawGradientCircle(int cx, int cy, int radius, uint16_t color1, uint16_t color2);
+void drawGlassPanel(int x, int y, int w, int h, int radius);
+void drawSmoothArc(int cx, int cy, int radius, float startAngle, float endAngle, int thickness, uint16_t color);
+uint16_t interpolateColor(uint16_t color1, uint16_t color2, float t);
 
 void setup() {
     Serial.begin(115200);
@@ -696,29 +704,41 @@ void drawWifiIcon(int x, int y, bool connected) {
 }
 
 void drawStatusBar() {
+    // Glass panel for status bar
+    drawGlassPanel(10, 10, 220, 30, 15);
+
     // Status indicators at top, beside the clock
     int y = 25;
-    
+
     // WiFi icon at left of clock
     bool wifiOk = (wifiState == CONN_CONNECTED);
     drawWifiIcon(CENTER_X - 50, y, wifiOk);
-    
-    // Time at top center
+
+    // Time at top center with shadow
     auto dt = M5Dial.Rtc.getDateTime();
     char timeStr[16];
     snprintf(timeStr, sizeof(timeStr), "%02d:%02d", dt.time.hours, dt.time.minutes);
     canvas.setTextDatum(middle_center);
+    canvas.setTextSize(1);
+    // Shadow
+    canvas.setTextColor(COLOR_DARK_GRAY);
+    canvas.drawString(timeStr, CENTER_X + 1, y + 1);
+    // Main text
     canvas.setTextColor(COLOR_TEXT);
     canvas.drawString(timeStr, CENTER_X, y);
-    
-    // MQTT label at right of clock
+
+    // MQTT label at right of clock with indicator dot
     canvas.setTextDatum(middle_center);
     if (mqttState == CONN_CONNECTED) {
+        // Green dot for connected
+        canvas.fillCircle(CENTER_X + 38, y, 3, COLOR_OK);
         canvas.setTextColor(COLOR_TEXT);  // White when connected
     } else {
+        // Red dot for disconnected
+        canvas.fillCircle(CENTER_X + 38, y, 3, COLOR_ERROR);
         canvas.setTextColor(COLOR_ERROR);  // Red when disconnected
     }
-    canvas.drawString("MQTT", CENTER_X + 50, y);
+    canvas.drawString("MQTT", CENTER_X + 56, y);
 }
 
 // Draw text along circular arc (for menu items on border)
@@ -753,6 +773,18 @@ void drawTextOnArc(const char* text, float centerAngleDeg, int radius, uint16_t 
         }
         float arcStart = arcStartAngle * PI / 180.0;
         float arcEnd = arcEndAngle * PI / 180.0;
+
+        // Draw glow effect
+        for (int layer = 3; layer > 0; layer--) {
+            uint16_t glowColor = interpolateColor(COLOR_BG, COLOR_ORANGE, layer / 3.0f);
+            for (float a = arcStart; a <= arcEnd; a += 0.02) {
+                int x = CENTER_X + (int)((radius) * sin(a));
+                int y = CENTER_Y - (int)((radius) * cos(a));
+                canvas.fillCircle(x, y, 8 + layer * 2, glowColor);
+            }
+        }
+
+        // Main highlight
         for (float a = arcStart; a <= arcEnd; a += 0.02) {
             int x = CENTER_X + (int)((radius) * sin(a));
             int y = CENTER_Y - (int)((radius) * cos(a));
@@ -781,8 +813,12 @@ void drawTextOnArc(const char* text, float centerAngleDeg, int radius, uint16_t 
 }
 
 void drawMainScreen() {
-    canvas.fillScreen(COLOR_BG);
-    
+    // Beautiful gradient background
+    for (int y = 0; y < SCREEN_HEIGHT; y++) {
+        uint16_t lineColor = interpolateColor(COLOR_BG, COLOR_BLUE, y / (float)SCREEN_HEIGHT);
+        canvas.drawFastHLine(0, y, SCREEN_WIDTH, lineColor);
+    }
+
     // Draw menu labels around the circular border (3 items: KEYPAD, SENSORS, SETTINGS)
     // KEYPAD at 270° (left side), SENSORS at 90° (right side), SETTINGS at 180° (bottom)
     // KEYPAD and SETTINGS are drawn anticlockwise so they read correctly
@@ -792,18 +828,18 @@ void drawMainScreen() {
         bool isSelected = (i == menuSelection);
         drawTextOnArc(menuNames[i], angles[i], 108, COLOR_DIM, isSelected, !anticlockwiseFlags[i]);
     }
-    
+
     drawStatusBar();
-    
+
     // Alarm state - large centered display
     canvas.setTextDatum(middle_center);
-    
+
     // Draw circular background for alarm state
     uint16_t stateColor = COLOR_DIM;
     String stateText = haAlarmState;
     bool isArmedState = false;
     bool isTriggeredState = false;
-    
+
     if (haAlarmState == "armed_away" || haAlarmState == "armed_home" || haAlarmState == "armed_night") {
         stateColor = COLOR_ARMED;
         stateText = "ARMED";
@@ -819,41 +855,59 @@ void drawMainScreen() {
         stateText = "TRIGGERED";
         isTriggeredState = true;
     }
-    
+
     // Calculate animated color for circle only (not text)
     // Sleeping man breathing: ~12-20 breaths/min = 0.2-0.33 Hz, use 5 second cycle (0.2 Hz)
     // Running man breathing: ~40-60 breaths/min = 0.67-1 Hz, use 400ms cycle (2.5 Hz)
     uint16_t circleColor = stateColor;
+    float breathPhase = 0.0f;
     if (isArmedState || isTriggeredState) {
         unsigned long now = millis();
         float brightness;
-        
+
         if (isTriggeredState) {
             // Fast pulsing for triggered state (400ms cycle = 2.5 Hz)
             float phase = (now % 400) / 400.0f;
-            brightness = 0.5f + 0.5f * sin(phase * 2.0f * PI);
+            brightness = 0.3f + 0.7f * sin(phase * 2.0f * PI);
+            breathPhase = brightness;
         } else {
             // Slow breathing for armed state (5000ms cycle = 0.2 Hz)
             float phase = (now % 5000) / 5000.0f;
-            brightness = 0.5f + 0.5f * sin(phase * 2.0f * PI);
+            brightness = 0.4f + 0.6f * sin(phase * 2.0f * PI);
+            breathPhase = brightness;
         }
-        
-        // Scale red component from 0 to full red (0xF800)
+
+        // Scale color with brightness
         uint8_t r = (uint8_t)(31 * brightness);  // 5 bits for red in RGB565
         circleColor = (r << 11);  // RGB565: RRRRR GGGGGG BBBBB
     }
-    
-    // Draw state circle (animated)
-    canvas.drawCircle(CENTER_X, CENTER_Y, 60, circleColor);
-    canvas.drawCircle(CENTER_X, CENTER_Y, 61, circleColor);
-    
-    // State text (static color, not animated)
-    canvas.setTextColor(stateColor);
+
+    // Draw beautiful gradient circle with glow effect
+    if (isArmedState || isTriggeredState) {
+        // Outer glow
+        for (int i = 0; i < 8; i++) {
+            uint16_t glowColor = interpolateColor(COLOR_BG, circleColor, (8 - i) / 8.0f * breathPhase);
+            canvas.drawCircle(CENTER_X, CENTER_Y, 70 + i, glowColor);
+        }
+    }
+
+    // Main state circle with gradient fill
+    drawGradientCircle(CENTER_X, CENTER_Y, 60, circleColor, stateColor);
+
+    // Multiple circle outlines for depth
+    canvas.drawCircle(CENTER_X, CENTER_Y, 60, stateColor);
+    canvas.drawCircle(CENTER_X, CENTER_Y, 61, stateColor);
+    canvas.drawCircle(CENTER_X, CENTER_Y, 62, interpolateColor(stateColor, COLOR_BG, 0.5f));
+
+    // State text with shadow effect
+    canvas.setTextColor(COLOR_DARK_GRAY);
     canvas.setTextSize(2);
+    canvas.drawString(stateText, CENTER_X + 2, CENTER_Y + 2);
+    canvas.setTextColor(stateColor);
     canvas.drawString(stateText, CENTER_X, CENTER_Y);
     canvas.setTextSize(1);
-    
-    // Sensor summary below center
+
+    // Sensor summary below center with glass panel
     int openCount = 0;
     String openSensorNames = "";
     for (int i = 0; i < HA_SENSOR_COUNT; i++) {
@@ -865,17 +919,20 @@ void drawMainScreen() {
             openSensorNames += haSensorNames[i];
         }
     }
-    
+
+    // Draw glass panel for sensor info
+    drawGlassPanel(30, CENTER_Y + 52, 180, 28, 14);
+
     canvas.setTextDatum(middle_center);
     if (openCount == 0) {
         canvas.setTextColor(COLOR_OK);
-        canvas.drawString("All closed", CENTER_X, CENTER_Y + 45);
+        canvas.drawString("All closed", CENTER_X, CENTER_Y + 66);
     } else {
         canvas.setTextColor(COLOR_ERROR);
         // Show sensor names when triggered, otherwise show count
         if (isTriggeredState && openCount <= 2) {
             // Show names if 1-2 sensors open (fits on screen)
-            canvas.drawString(openSensorNames, CENTER_X, CENTER_Y + 45);
+            canvas.drawString(openSensorNames, CENTER_X, CENTER_Y + 66);
         } else if (isTriggeredState) {
             // Too many open, show first name + count
             String firstOpen = "";
@@ -887,69 +944,80 @@ void drawMainScreen() {
             }
             char buf[48];
             snprintf(buf, sizeof(buf), "%s +%d", firstOpen.c_str(), openCount - 1);
-            canvas.drawString(buf, CENTER_X, CENTER_Y + 45);
+            canvas.drawString(buf, CENTER_X, CENTER_Y + 66);
         } else {
             char buf[32];
             snprintf(buf, sizeof(buf), "%d open", openCount);
-            canvas.drawString(buf, CENTER_X, CENTER_Y + 45);
+            canvas.drawString(buf, CENTER_X, CENTER_Y + 66);
         }
     }
 }
 
 void drawKeypadScreen() {
-    canvas.fillScreen(COLOR_BG);
-    
+    // Gradient background
+    for (int y = 0; y < SCREEN_HEIGHT; y++) {
+        uint16_t lineColor = interpolateColor(COLOR_BG, COLOR_BLUE, y / (float)SCREEN_HEIGHT);
+        canvas.drawFastHLine(0, y, SCREEN_WIDTH, lineColor);
+    }
+
     drawStatusBar();
-    
+
     // Title - only show "ENTER CODE" when no code entered
     canvas.setTextDatum(middle_center);
     if (codeLength == 0) {
         canvas.setTextColor(COLOR_ORANGE);
         canvas.drawString("ENTER CODE", CENTER_X, 48);
     }
-    
-    // Draw entered code (masked with asterisks)
-    canvas.setTextSize(2);
-    canvas.setTextColor(COLOR_TEXT);
-    String maskedCode = "";
-    for (int i = 0; i < codeLength; i++) {
-        maskedCode += "*";
-    }
+
+    // Draw entered code (masked with asterisks) with glass panel
     if (codeLength > 0) {
+        drawGlassPanel(60, 36, 120, 24, 12);
+        canvas.setTextSize(2);
+        canvas.setTextColor(COLOR_TEXT);
+        String maskedCode = "";
+        for (int i = 0; i < codeLength; i++) {
+            maskedCode += "*";
+        }
         canvas.drawString(maskedCode, CENTER_X, 48);
+        canvas.setTextSize(1);
     }
-    canvas.setTextSize(1);
-    
-    // Draw CLR button on left side (no border, just text)
+
+    // Draw CLR button on left side with glass effect
     int clrX = 15;
     int clrY = KEYPAD_START_Y;
     bool clrSelected = (selectedKey == 10);
+
     if (clrSelected) {
-        canvas.setTextColor(COLOR_ACCENT);
+        canvas.fillRoundRect(clrX - 8, clrY - 5, 26, SIDE_BTN_HEIGHT + 10, 13, COLOR_ACCENT);
     } else {
-        canvas.setTextColor(COLOR_DIM);
+        drawGlassPanel(clrX - 8, clrY - 5, 26, SIDE_BTN_HEIGHT + 10, 13);
     }
+
+    canvas.setTextColor(clrSelected ? COLOR_TEXT : COLOR_DIM);
     canvas.setTextDatum(middle_center);
     // Draw CLR vertically
     canvas.drawString("C", clrX, clrY + SIDE_BTN_HEIGHT/2 - 15);
     canvas.drawString("L", clrX, clrY + SIDE_BTN_HEIGHT/2);
     canvas.drawString("R", clrX, clrY + SIDE_BTN_HEIGHT/2 + 15);
-    
-    // Draw OK button on right side (no border, just text)
+
+    // Draw OK button on right side with glass effect
     int okX = 225;
     int okY = KEYPAD_START_Y;
     bool okSelected = (selectedKey == 11);
+
     if (okSelected) {
-        canvas.setTextColor(COLOR_ACCENT);
+        canvas.fillRoundRect(okX - 8, okY - 5, 26, SIDE_BTN_HEIGHT + 10, 13, COLOR_OK);
     } else {
-        canvas.setTextColor(COLOR_DIM);
+        drawGlassPanel(okX - 8, okY - 5, 26, SIDE_BTN_HEIGHT + 10, 13);
     }
+
+    canvas.setTextColor(okSelected ? COLOR_TEXT : COLOR_DIM);
     canvas.setTextDatum(middle_center);
     // Draw OK vertically
     canvas.drawString("O", okX, okY + SIDE_BTN_HEIGHT/2 - 8);
     canvas.drawString("K", okX, okY + SIDE_BTN_HEIGHT/2 + 8);
-    
-    // Draw number keypad (3x3 grid for 1-9, then 0 centered at bottom)
+
+    // Draw number keypad (3x3 grid for 1-9, then 0 centered at bottom) with beautiful buttons
     for (int i = 0; i < 10; i++) {
         int row, col, x, y;
         if (i < 9) {
@@ -965,85 +1033,116 @@ void drawKeypadScreen() {
             x = KEYPAD_START_X + col * KEY_WIDTH;
             y = KEYPAD_START_Y + row * KEY_HEIGHT;
         }
-        
+
         bool isSelected = (i == selectedKey);
-        
-        // Draw key background
+
+        // Draw key with gradient and glow effect
         if (isSelected) {
+            // Glow effect for selected key
+            for (int g = 0; g < 4; g++) {
+                uint16_t glowColor = interpolateColor(COLOR_BG, COLOR_ORANGE, (4 - g) / 4.0f);
+                canvas.drawRoundRect(x + 2 - g, y + 2 - g, KEY_WIDTH - 4 + g*2, KEY_HEIGHT - 4 + g*2, 8, glowColor);
+            }
+            // Filled gradient button
             canvas.fillRoundRect(x + 2, y + 2, KEY_WIDTH - 4, KEY_HEIGHT - 4, 8, COLOR_ORANGE);
+            // Highlight at top
+            canvas.fillRoundRect(x + 4, y + 4, KEY_WIDTH - 8, 3, 6, interpolateColor(COLOR_ORANGE, COLOR_TEXT, 0.3f));
             canvas.setTextColor(COLOR_TEXT);
         } else {
-            canvas.drawRoundRect(x + 2, y + 2, KEY_WIDTH - 4, KEY_HEIGHT - 4, 8, COLOR_DIM);
+            // Glass effect for unselected keys
+            drawGlassPanel(x + 2, y + 2, KEY_WIDTH - 4, KEY_HEIGHT - 4, 8);
             canvas.setTextColor(COLOR_TEXT);
         }
-        
-        // Draw key label
+
+        // Draw key label with shadow
         canvas.setTextDatum(middle_center);
         canvas.setTextSize(2);
         char keyLabel[2] = {keypadChars[i], '\0'};
+        if (!isSelected) {
+            canvas.setTextColor(COLOR_DARK_GRAY);
+            canvas.drawString(keyLabel, x + KEY_WIDTH/2 + 1, y + KEY_HEIGHT/2 + 1);
+        }
+        canvas.setTextColor(COLOR_TEXT);
         canvas.drawString(keyLabel, x + KEY_WIDTH/2, y + KEY_HEIGHT/2);
         canvas.setTextSize(1);
     }
 }
 
 void drawSensorsScreen() {
-    canvas.fillScreen(COLOR_BG);
-    
+    // Gradient background
+    for (int y = 0; y < SCREEN_HEIGHT; y++) {
+        uint16_t lineColor = interpolateColor(COLOR_BG, COLOR_BLUE, y / (float)SCREEN_HEIGHT);
+        canvas.drawFastHLine(0, y, SCREEN_WIDTH, lineColor);
+    }
+
     drawStatusBar();
-    
-    // Title
+
+    // Title with glow effect
     canvas.setTextDatum(middle_center);
     canvas.setTextColor(COLOR_ACCENT);
     canvas.drawString("SENSORS", CENTER_X, 48);
-    
-    // Draw sensor list in 2 columns
+
+    // Draw sensor list in 2 columns with glass panels
     int startY = 65;
     int lineHeight = 15;
     int colWidth = 115;  // Width for each column
     int col1X = 15;      // Left column X position
     int col2X = 125;     // Right column X position
     int rowsPerCol = (HA_SENSOR_COUNT + 1) / 2;  // Ceiling division
-    
+
     canvas.setTextDatum(middle_left);
-    
+
     for (int i = 0; i < HA_SENSOR_COUNT; i++) {
         int col = i / rowsPerCol;  // 0 = left column, 1 = right column
         int row = i % rowsPerCol;
         int x = (col == 0) ? col1X : col2X;
         int y = startY + row * lineHeight;
-        
-        // Status indicator
+
+        // Draw glass panel for each sensor
+        drawGlassPanel(x - 2, y - 7, colWidth - 10, 14, 7);
+
+        // Status indicator with glow
         if (haSensorOpen[i]) {
+            // Red glow for open sensors
+            for (int g = 0; g < 3; g++) {
+                canvas.drawCircle(x + 5, y, 4 + g, interpolateColor(COLOR_BG, COLOR_ERROR, (3 - g) / 3.0f));
+            }
             canvas.fillCircle(x + 5, y, 4, COLOR_ERROR);
             canvas.setTextColor(COLOR_ERROR);
         } else {
+            // Green indicator for closed sensors
             canvas.fillCircle(x + 5, y, 4, COLOR_OK);
-            canvas.setTextColor(COLOR_OK);
+            canvas.setTextColor(COLOR_DIM);
         }
-        
+
         // Sensor name (shortened to fit column)
         canvas.drawString(haSensorNames[i], x + 14, y);
     }
-    
-    // Hint
-    canvas.setTextColor(COLOR_DIM);
+
+    // Hint with glass panel
+    drawGlassPanel(50, 207, 140, 20, 10);
+    canvas.setTextColor(COLOR_ACCENT);
     canvas.setTextDatum(middle_center);
-    canvas.drawString("Press/Touch: Back", CENTER_X, 220);
+    canvas.drawString("Press/Touch: Back", CENTER_X, 217);
 }
 
 void drawSettingsScreen() {
-    canvas.fillScreen(COLOR_BG);
-    
+    // Gradient background
+    for (int y = 0; y < SCREEN_HEIGHT; y++) {
+        uint16_t lineColor = interpolateColor(COLOR_BG, COLOR_BLUE, y / (float)SCREEN_HEIGHT);
+        canvas.drawFastHLine(0, y, SCREEN_WIDTH, lineColor);
+    }
+
     drawStatusBar();
-    
+
     // Title
     canvas.setTextDatum(middle_center);
     canvas.setTextColor(COLOR_ORANGE);
     canvas.drawString("SETTINGS", CENTER_X, 48);
-    
+
     // Get current RTC time
     auto dt = M5Dial.Rtc.getDateTime();
-    
+
     // Field names and values
     const char* fieldNames[] = {"Hour", "Min", "Day", "Month", "Year"};
     int fieldValues[] = {
@@ -1053,30 +1152,47 @@ void drawSettingsScreen() {
         dt.date.month,
         dt.date.year
     };
-    
-    int startY = 62;
-    int lineHeight = 22;  // Reduced from 28 to fit all rows
-    
+
+    int startY = 70;
+    int lineHeight = 24;
+
     for (int i = 0; i < SET_FIELD_COUNT; i++) {
         int y = startY + i * lineHeight;
         bool isSelected = (i == settingsField);
-        
-        // Highlight selected field
+
+        // Draw glass panel for each field
+        drawGlassPanel(30, y - 10, 180, 22, 11);
+
+        // Highlight selected field with glow
         if (isSelected) {
             if (settingsEditing) {
-                canvas.fillRoundRect(40, y - 8, 160, 18, 4, 0x03E0);  // Green when editing
+                // Glow effect when editing
+                for (int g = 0; g < 3; g++) {
+                    canvas.drawRoundRect(30 - g, y - 10 - g, 180 + g*2, 22 + g*2, 11,
+                                       interpolateColor(COLOR_BG, COLOR_OK, (3 - g) / 3.0f));
+                }
+                canvas.fillRoundRect(30, y - 10, 180, 22, 11, COLOR_OK);  // Green when editing
+                // Highlight
+                canvas.fillRoundRect(32, y - 8, 176, 4, 9, interpolateColor(COLOR_OK, COLOR_TEXT, 0.5f));
             } else {
-                canvas.fillRoundRect(40, y - 8, 160, 18, 4, COLOR_ORANGE);  // Orange when selected
+                // Glow effect when selected
+                for (int g = 0; g < 3; g++) {
+                    canvas.drawRoundRect(30 - g, y - 10 - g, 180 + g*2, 22 + g*2, 11,
+                                       interpolateColor(COLOR_BG, COLOR_ORANGE, (3 - g) / 3.0f));
+                }
+                canvas.fillRoundRect(30, y - 10, 180, 22, 11, COLOR_ORANGE);  // Orange when selected
+                // Highlight
+                canvas.fillRoundRect(32, y - 8, 176, 4, 9, interpolateColor(COLOR_ORANGE, COLOR_TEXT, 0.5f));
             }
             canvas.setTextColor(COLOR_TEXT);
         } else {
             canvas.setTextColor(COLOR_DIM);
         }
-        
+
         // Field name
         canvas.setTextDatum(middle_left);
-        canvas.drawString(fieldNames[i], 50, y);
-        
+        canvas.drawString(fieldNames[i], 40, y);
+
         // Field value
         canvas.setTextDatum(middle_right);
         char valStr[8];
@@ -1085,18 +1201,20 @@ void drawSettingsScreen() {
         } else {
             snprintf(valStr, sizeof(valStr), "%02d", fieldValues[i]);
         }
-        canvas.drawString(valStr, 190, y);
+        canvas.drawString(valStr, 200, y);
     }
-    
+
     // Hint - positioned to fit on screen
-    canvas.setTextColor(COLOR_DIM);
+    drawGlassPanel(15, 185, 210, 32, 10);
+    canvas.setTextColor(COLOR_ACCENT);
     canvas.setTextDatum(middle_center);
     if (settingsEditing) {
-        canvas.drawString("Turn: Adjust | Press: Next", CENTER_X, 185);
+        canvas.drawString("Turn: Adjust | Press: Next", CENTER_X, 192);
     } else {
-        canvas.drawString("Turn: Select | Press: Edit", CENTER_X, 185);
+        canvas.drawString("Turn: Select | Press: Edit", CENTER_X, 192);
     }
-    canvas.drawString("Long Press: Back", CENTER_X, 200);
+    canvas.setTextColor(COLOR_DIM);
+    canvas.drawString("Long Press: Back", CENTER_X, 208);
 }
 
 // Set RTC from compile time (__DATE__ and __TIME__ macros)
@@ -1232,4 +1350,62 @@ void playAlarmBuzzer() {
 void stopAlarmBuzzer() {
     alarmBuzzerActive = false;
     M5Dial.Speaker.stop();
+}
+
+// ========== Beautiful UI Helper Functions ==========
+
+// Interpolate between two RGB565 colors
+uint16_t interpolateColor(uint16_t color1, uint16_t color2, float t) {
+    if (t <= 0.0f) return color1;
+    if (t >= 1.0f) return color2;
+
+    // Extract RGB components from RGB565
+    uint8_t r1 = (color1 >> 11) & 0x1F;
+    uint8_t g1 = (color1 >> 5) & 0x3F;
+    uint8_t b1 = color1 & 0x1F;
+
+    uint8_t r2 = (color2 >> 11) & 0x1F;
+    uint8_t g2 = (color2 >> 5) & 0x3F;
+    uint8_t b2 = color2 & 0x1F;
+
+    // Interpolate each component
+    uint8_t r = r1 + (uint8_t)((r2 - r1) * t);
+    uint8_t g = g1 + (uint8_t)((g2 - g1) * t);
+    uint8_t b = b1 + (uint8_t)((b2 - b1) * t);
+
+    // Combine back to RGB565
+    return (r << 11) | (g << 5) | b;
+}
+
+// Draw a gradient-filled circle
+void drawGradientCircle(int cx, int cy, int radius, uint16_t color1, uint16_t color2) {
+    for (int r = radius; r > 0; r--) {
+        float t = 1.0f - (r / (float)radius);
+        uint16_t color = interpolateColor(color1, color2, t * 0.3f);
+        canvas.drawCircle(cx, cy, r, color);
+    }
+}
+
+// Draw a glassmorphic panel (modern UI effect)
+void drawGlassPanel(int x, int y, int w, int h, int radius) {
+    // Semi-transparent dark background
+    canvas.fillRoundRect(x, y, w, h, radius, COLOR_GLASS);
+
+    // Lighter border on top-left (highlight)
+    canvas.drawRoundRect(x, y, w, h, radius, interpolateColor(COLOR_TEXT, COLOR_GLASS, 0.7f));
+
+    // Darker border on bottom-right (shadow)
+    canvas.drawRoundRect(x + 1, y + 1, w - 2, h - 2, radius - 1, COLOR_DARK_GRAY);
+}
+
+// Draw a smooth arc with thickness
+void drawSmoothArc(int cx, int cy, int radius, float startAngle, float endAngle, int thickness, uint16_t color) {
+    for (int t = 0; t < thickness; t++) {
+        int r = radius - t;
+        for (float a = startAngle; a <= endAngle; a += 0.02f) {
+            int x = cx + (int)(r * cos(a));
+            int y = cy + (int)(r * sin(a));
+            canvas.drawPixel(x, y, color);
+        }
+    }
 }
