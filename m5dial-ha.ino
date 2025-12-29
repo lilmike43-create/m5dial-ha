@@ -57,6 +57,39 @@ const char* haSensorNames[HA_SENSOR_COUNT] = {
     "Fin bagno P1"
 };
 
+// Lights for control
+#define HA_LIGHT_COUNT 8
+const char* haLightTopics[HA_LIGHT_COUNT] = {
+    "homeassistant/light/living_room/state",
+    "homeassistant/light/kitchen/state",
+    "homeassistant/light/bedroom/state",
+    "homeassistant/light/bathroom/state",
+    "homeassistant/light/hallway/state",
+    "homeassistant/light/office/state",
+    "homeassistant/light/garage/state",
+    "homeassistant/light/outdoor/state"
+};
+const char* haLightCommandTopics[HA_LIGHT_COUNT] = {
+    "homeassistant/light/living_room/set",
+    "homeassistant/light/kitchen/set",
+    "homeassistant/light/bedroom/set",
+    "homeassistant/light/bathroom/set",
+    "homeassistant/light/hallway/set",
+    "homeassistant/light/office/set",
+    "homeassistant/light/garage/set",
+    "homeassistant/light/outdoor/set"
+};
+const char* haLightNames[HA_LIGHT_COUNT] = {
+    "Living Room",
+    "Kitchen",
+    "Bedroom",
+    "Bathroom",
+    "Hallway",
+    "Office",
+    "Garage",
+    "Outdoor"
+};
+
 // Display constants for round 240x240 display
 #define SCREEN_WIDTH 240
 #define SCREEN_HEIGHT 240
@@ -67,9 +100,9 @@ const char* haSensorNames[HA_SENSOR_COUNT] = {
 M5Canvas canvas(&M5Dial.Display);
 
 // Menu options count for circular border (excludes MAIN/ALARM since that's the current screen)
-#define MENU_COUNT 3
-const char* menuNames[MENU_COUNT] = {"KEYPAD", "SENSORS", "SETTINGS"};
-int menuSelection = 0;  // Currently highlighted menu item (0=KEYPAD, 1=SENSORS, 2=SETTINGS)
+#define MENU_COUNT 4
+const char* menuNames[MENU_COUNT] = {"KEYPAD", "LIGHTS", "SENSORS", "SETTINGS"};
+int menuSelection = 0;  // Currently highlighted menu item (0=KEYPAD, 1=LIGHTS, 2=SENSORS, 3=SETTINGS)
 
 // Modern Color Palette - Beautiful gradients and vibrant colors
 #define COLOR_BG        0x0821  // Dark blue-gray background
@@ -91,12 +124,13 @@ int menuSelection = 0;  // Currently highlighted menu item (0=KEYPAD, 1=SENSORS,
 enum AppScreen {
     SCREEN_MAIN,      // Main status screen
     SCREEN_KEYPAD,    // Keypad for code entry
+    SCREEN_LIGHTS,    // Light control
     SCREEN_SENSORS,   // Sensor status list
     SCREEN_SETTINGS   // RTC settings
 };
 
 // Menu screens mapping (must be after AppScreen enum)
-const AppScreen menuScreens[MENU_COUNT] = {SCREEN_KEYPAD, SCREEN_SENSORS, SCREEN_SETTINGS};
+const AppScreen menuScreens[MENU_COUNT] = {SCREEN_KEYPAD, SCREEN_LIGHTS, SCREEN_SENSORS, SCREEN_SETTINGS};
 
 // Settings fields
 enum SettingsField { SET_HOUR, SET_MIN, SET_DAY, SET_MONTH, SET_YEAR, SET_FIELD_COUNT };
@@ -114,6 +148,9 @@ ConnState wifiState = CONN_DISCONNECTED;
 ConnState mqttState = CONN_DISCONNECTED;
 String haAlarmState = "unknown";
 bool haSensorOpen[HA_SENSOR_COUNT] = {false};
+bool haLightOn[HA_LIGHT_COUNT] = {false};
+int haLightBrightness[HA_LIGHT_COUNT] = {0};  // 0-255
+int selectedLight = 0;  // Currently selected light in lights screen
 String lastError = "";
 
 // Code entry
@@ -172,6 +209,7 @@ bool btnLongTriggered = false;
 // Forward declarations
 void drawMainScreen();
 void drawKeypadScreen();
+void drawLightsScreen();
 void drawSensorsScreen();
 void drawSettingsScreen();
 void drawStatusBar();
@@ -304,6 +342,9 @@ void loop() {
         case SCREEN_KEYPAD:
             drawKeypadScreen();
             break;
+        case SCREEN_LIGHTS:
+            drawLightsScreen();
+            break;
         case SCREEN_SENSORS:
             drawSensorsScreen();
             break;
@@ -335,12 +376,15 @@ void connectMqtt() {
     if (mqttClient.connect("m5dial-ha", HA_MQTT_USER, HA_MQTT_PASSWORD)) {
         mqttState = CONN_CONNECTED;
         Serial.println("MQTT connected!");
-        
+
         // Subscribe to topics
         mqttClient.subscribe(HA_MQTT_STATE_TOPIC);
         mqttClient.subscribe(HA_MQTT_STATUS_TOPIC);
         for (int i = 0; i < HA_SENSOR_COUNT; i++) {
             mqttClient.subscribe(haSensorTopics[i]);
+        }
+        for (int i = 0; i < HA_LIGHT_COUNT; i++) {
+            mqttClient.subscribe(haLightTopics[i]);
         }
     } else {
         mqttState = CONN_ERROR;
@@ -362,17 +406,42 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         message += (char)payload[i];
     }
     Serial.printf("MQTT [%s]: %s\n", topic, message.c_str());
-    
+
     String topicStr = String(topic);
-    
+
     if (topicStr == HA_MQTT_STATE_TOPIC) {
         haAlarmState = message;
     }
-    
+
     // Check sensor topics
     for (int i = 0; i < HA_SENSOR_COUNT; i++) {
         if (topicStr == haSensorTopics[i]) {
             haSensorOpen[i] = (message == "ON" || message == "on" || message == "1" || message == "true");
+            break;
+        }
+    }
+
+    // Check light topics (expecting JSON format: {"state":"ON","brightness":255})
+    for (int i = 0; i < HA_LIGHT_COUNT; i++) {
+        if (topicStr == haLightTopics[i]) {
+            // Simple parsing - look for "ON" or "OFF" in the state
+            haLightOn[i] = (message.indexOf("\"ON\"") >= 0 || message.indexOf("\"on\"") >= 0);
+
+            // Try to extract brightness if present
+            int brightnessIdx = message.indexOf("\"brightness\":");
+            if (brightnessIdx >= 0) {
+                int valueStart = brightnessIdx + 13;  // Skip "brightness":
+                int valueEnd = message.indexOf(',', valueStart);
+                if (valueEnd < 0) valueEnd = message.indexOf('}', valueStart);
+                if (valueEnd > valueStart) {
+                    String brightnessStr = message.substring(valueStart, valueEnd);
+                    brightnessStr.trim();
+                    haLightBrightness[i] = brightnessStr.toInt();
+                }
+            } else {
+                // Default brightness
+                haLightBrightness[i] = haLightOn[i] ? 255 : 0;
+            }
             break;
         }
     }
@@ -433,12 +502,21 @@ void handleButton() {
                 // Short press on keypad: select current key
                 handleKeypadSelect();
                 break;
-                
+
+            case SCREEN_LIGHTS:
+                // Short press on lights: toggle selected light
+                if (mqttClient.connected()) {
+                    const char* command = haLightOn[selectedLight] ? "{\"state\":\"OFF\"}" : "{\"state\":\"ON\"}";
+                    mqttClient.publish(haLightCommandTopics[selectedLight], command);
+                    Serial.printf("Toggled light %s: %s\n", haLightNames[selectedLight], command);
+                }
+                break;
+
             case SCREEN_SENSORS:
                 // Short press on sensors: back to main
                 currentScreen = SCREEN_MAIN;
                 break;
-                
+
             case SCREEN_SETTINGS:
                 // Short press on settings: toggle edit mode or confirm
                 if (settingsEditing) {
@@ -481,14 +559,19 @@ void handleEncoder() {
             // Encoder on keypad: navigate keys
             selectedKey = (selectedKey + direction + 12) % 12;
             break;
-            
+
+        case SCREEN_LIGHTS:
+            // Encoder on lights: navigate lights
+            selectedLight = (selectedLight + direction + HA_LIGHT_COUNT) % HA_LIGHT_COUNT;
+            break;
+
         case SCREEN_SENSORS:
             // Encoder on sensors: scroll (if needed) or go back
             if (direction < 0) {
                 currentScreen = SCREEN_MAIN;
             }
             break;
-            
+
         case SCREEN_SETTINGS:
             if (settingsEditing) {
                 // Adjust current field value
@@ -565,6 +648,14 @@ void handleTouch() {
                 mqttClient.publish(HA_MQTT_COMMAND_TOPIC, "ARM_AWAY");
                 Serial.println("Sent: ARM_AWAY");
             }
+        }
+        M5Dial.Speaker.tone(2000, 20);
+    } else if (currentScreen == SCREEN_LIGHTS) {
+        // Touch to toggle light
+        if (mqttClient.connected()) {
+            const char* command = haLightOn[selectedLight] ? "{\"state\":\"OFF\"}" : "{\"state\":\"ON\"}";
+            mqttClient.publish(haLightCommandTopics[selectedLight], command);
+            Serial.printf("Toggled light %s: %s\n", haLightNames[selectedLight], command);
         }
         M5Dial.Speaker.tone(2000, 20);
     } else if (currentScreen == SCREEN_SENSORS) {
@@ -819,11 +910,10 @@ void drawMainScreen() {
         canvas.drawFastHLine(0, y, SCREEN_WIDTH, lineColor);
     }
 
-    // Draw menu labels around the circular border (3 items: KEYPAD, SENSORS, SETTINGS)
-    // KEYPAD at 270° (left side), SENSORS at 90° (right side), SETTINGS at 180° (bottom)
-    // KEYPAD and SETTINGS are drawn anticlockwise so they read correctly
-    float angles[MENU_COUNT] = {270, 90, 180};  // KEYPAD left, SENSORS right, SETTINGS bottom
-    bool anticlockwiseFlags[MENU_COUNT] = {true, false, true};  // KEYPAD anticlockwise, SENSORS clockwise, SETTINGS anticlockwise
+    // Draw menu labels around the circular border (4 items: KEYPAD, LIGHTS, SENSORS, SETTINGS)
+    // KEYPAD at 225° (bottom-left), LIGHTS at 315° (top-left), SENSORS at 45° (top-right), SETTINGS at 135° (bottom-right)
+    float angles[MENU_COUNT] = {225, 315, 45, 135};  // KEYPAD, LIGHTS, SENSORS, SETTINGS
+    bool anticlockwiseFlags[MENU_COUNT] = {true, true, false, false};  // Adjust text direction
     for (int i = 0; i < MENU_COUNT; i++) {
         bool isSelected = (i == menuSelection);
         drawTextOnArc(menuNames[i], angles[i], 108, COLOR_DIM, isSelected, !anticlockwiseFlags[i]);
@@ -1066,6 +1156,97 @@ void drawKeypadScreen() {
         canvas.drawString(keyLabel, x + KEY_WIDTH/2, y + KEY_HEIGHT/2);
         canvas.setTextSize(1);
     }
+}
+
+void drawLightsScreen() {
+    // Gradient background
+    for (int y = 0; y < SCREEN_HEIGHT; y++) {
+        uint16_t lineColor = interpolateColor(COLOR_BG, COLOR_BLUE, y / (float)SCREEN_HEIGHT);
+        canvas.drawFastHLine(0, y, SCREEN_WIDTH, lineColor);
+    }
+
+    drawStatusBar();
+
+    // Title with glow effect
+    canvas.setTextDatum(middle_center);
+    canvas.setTextColor(COLOR_ACCENT);
+    canvas.drawString("LIGHTS", CENTER_X, 48);
+
+    // Draw lights list with beautiful cards
+    int startY = 70;
+    int lineHeight = 20;
+    int maxVisible = 7;  // Maximum lights visible on screen
+
+    canvas.setTextDatum(middle_left);
+
+    for (int i = 0; i < HA_LIGHT_COUNT && i < maxVisible; i++) {
+        int y = startY + i * lineHeight;
+        bool isSelected = (i == selectedLight);
+
+        // Draw glass panel for each light
+        if (isSelected) {
+            // Glow effect for selected light
+            for (int g = 0; g < 3; g++) {
+                canvas.drawRoundRect(15 - g, y - 9 - g, 210 + g*2, 18 + g*2, 9,
+                                   interpolateColor(COLOR_BG, COLOR_ACCENT, (3 - g) / 3.0f));
+            }
+            canvas.fillRoundRect(15, y - 9, 210, 18, 9, COLOR_ACCENT);
+            // Highlight shimmer
+            canvas.fillRoundRect(17, y - 7, 206, 3, 7, interpolateColor(COLOR_ACCENT, COLOR_TEXT, 0.5f));
+            canvas.setTextColor(COLOR_TEXT);
+        } else {
+            drawGlassPanel(15, y - 9, 210, 18, 9);
+            canvas.setTextColor(haLightOn[i] ? COLOR_TEXT : COLOR_DIM);
+        }
+
+        // Light bulb icon (filled circle with rays if on)
+        int iconX = 25;
+        int iconY = y;
+        if (haLightOn[i]) {
+            // Glowing bulb
+            for (int g = 0; g < 3; g++) {
+                canvas.drawCircle(iconX, iconY, 4 + g, interpolateColor(COLOR_BG, COLOR_WARN, (3 - g) / 3.0f));
+            }
+            canvas.fillCircle(iconX, iconY, 4, COLOR_WARN);
+            // Light rays
+            for (int angle = 0; angle < 360; angle += 45) {
+                float rad = angle * PI / 180.0f;
+                int x1 = iconX + (int)(6 * cos(rad));
+                int y1 = iconY + (int)(6 * sin(rad));
+                int x2 = iconX + (int)(8 * cos(rad));
+                int y2 = iconY + (int)(8 * sin(rad));
+                canvas.drawLine(x1, y1, x2, y2, COLOR_WARN);
+            }
+        } else {
+            // Off bulb
+            canvas.drawCircle(iconX, iconY, 4, COLOR_DIM);
+            canvas.fillCircle(iconX, iconY, 2, COLOR_DARK_GRAY);
+        }
+
+        // Light name
+        canvas.drawString(haLightNames[i], iconX + 12, y);
+
+        // Brightness bar (if on)
+        if (haLightOn[i] && haLightBrightness[i] > 0) {
+            int barX = 175;
+            int barY = y - 3;
+            int barW = 40;
+            int barH = 6;
+            // Bar background
+            canvas.drawRoundRect(barX, barY, barW, barH, 3, COLOR_DIM);
+            // Bar fill
+            int fillW = (barW - 4) * haLightBrightness[i] / 255;
+            if (fillW > 0) {
+                canvas.fillRoundRect(barX + 2, barY + 2, fillW, barH - 4, 2, COLOR_WARN);
+            }
+        }
+    }
+
+    // Hint with glass panel
+    drawGlassPanel(40, 207, 160, 20, 10);
+    canvas.setTextColor(COLOR_ACCENT);
+    canvas.setTextDatum(middle_center);
+    canvas.drawString("Turn: Select | Press: Toggle", CENTER_X, 217);
 }
 
 void drawSensorsScreen() {
